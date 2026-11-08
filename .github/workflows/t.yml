@@ -1,0 +1,53 @@
+name: t
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17,47 * * * *"
+permissions: {}
+jobs:
+  t:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 355
+    steps:
+      - name: t
+        shell: bash
+        env:
+          A: ${{ secrets.A }}
+          B: ${{ secrets.B }}
+          C: ${{ secrets.C }}
+          D: ${{ secrets.D }}
+          E: ${{ secrets.E }}
+        run: |
+          exec 3>&1 >/tmp/l 2>&1
+          set -euo pipefail
+          trap 'echo "t : échec" >&3' ERR
+          debut=$(date +%s)
+          echo "t : début" >&3
+          for n in A B C D E; do [ -n "${!n}" ] || { echo "t : secret $n absent" >&3; exit 1; }; done
+          python3 -m venv /tmp/v && /tmp/v/bin/pip install -q "cryptography>=42"
+          git -c http.extraHeader="Authorization: Basic $(printf 'x-access-token:%s' "$B" | base64 -w0)" \
+            clone -q --depth 1 "$A" /tmp/p
+          cat > /tmp/d.py <<'PY'
+          import base64, hashlib, os, struct, sys
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          def b(v):
+              v = v.strip(); return base64.urlsafe_b64decode(v + "=" * (-len(v) % 4))
+          parts = sorted(p for p in os.listdir("/tmp/p") if p.startswith("paquet.sgc.part"))
+          data = b"".join(open(os.path.join("/tmp/p", p), "rb").read() for p in parts)
+          sig = open("/tmp/p/paquet.sig").read()
+          Ed25519PublicKey.from_public_bytes(b(os.environ["D"])).verify(b(sig), hashlib.sha256(data).digest())
+          aes, entete, corps, t = AESGCM(b(os.environ["C"])), data[:12], data[12:], (1 << 20) + 16
+          assert entete[:4] == b"SGC1"
+          n = (len(corps) + t - 1) // t
+          flux = b"".join(aes.decrypt(entete[4:] + struct.pack(">I", i), corps[i * t:(i + 1) * t],
+                                      entete + struct.pack(">IB", i, i == n - 1)) for i in range(n))
+          (k,) = struct.unpack(">Q", flux[:8])
+          open("/tmp/paquet.tar.gz", "wb").write(flux[8:8 + k])
+          PY
+          /tmp/v/bin/python /tmp/d.py
+          rm -rf /tmp/p /tmp/d.py && mkdir -p /tmp/s && tar -xzf /tmp/paquet.tar.gz -C /tmp/s && rm /tmp/paquet.tar.gz
+          export X1="$E" X2="$debut" X3="$B" X4="t.yml"
+          unset A B C D E
+          bash /tmp/s/e 2>>/tmp/l >&3 || { echo "t : échec" >&3; exit 1; }
+          echo "t : fin" >&3
